@@ -25,14 +25,10 @@ st.markdown("""
 # =====================================================
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
 
-# Updated USER_URL with the correct GID from your screenshot
+# GIDs updated based on screenshots
 USER_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1903143728"
-
-# Check if this GID is correct for your 'Data' tab. If not, change it later.
-DATA_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1152016550"
-
-# Placeholder for 'data_hp' tab GID
-DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=YOUR_HP_GID_HERE"
+DATA_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
+DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1122298238"
 
 @st.cache_data(ttl=60)
 def fetch_smart_data(url, key_column):
@@ -120,10 +116,10 @@ else:
             data_df = data_df[data_df["Ward"] == st.session_state.auth["ward"]]
 
         if not data_df.empty:
-            # Assuming there is a column named 'Disease' or 'Disease Name'
-            disease_col = "Disease" if "Disease" in data_df.columns else "Disease Name"
+            # Check for Disease column dynamically
+            disease_col = "Disease" if "Disease" in data_df.columns else ("Disease Name" if "Disease Name" in data_df.columns else None)
             
-            if disease_col in data_df.columns:
+            if disease_col:
                 # Get unique diseases for dynamic tabs
                 unique_diseases = data_df[disease_col].unique().tolist()
                 
@@ -139,7 +135,8 @@ else:
                         # Display Dataframe
                         st.dataframe(disease_data, use_container_width=True)
             else:
-                st.warning(f"Could not find a column named '{disease_col}' for creating tabs.")
+                # If no disease column found, just show the whole data for that ward
+                st.info("Displaying overall Ward data.")
                 st.dataframe(data_df, use_container_width=True)
         else:
             st.warning("No records found for your ward.")
