@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 # =====================================================
 # 1. PAGE SETUP & STYLING
@@ -17,6 +18,7 @@ st.markdown("""
         padding: 30px; border-radius: 15px; background-color: white;
         box-shadow: 0 4px 12px rgba(0,0,0,0.1); text-align: center;
     }
+    .disease-header { color: #d9534f; border-bottom: 2px solid #d9534f; padding-bottom: 5px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -24,40 +26,106 @@ st.markdown("""
 # 2. CONFIG & DATA LOADER
 # =====================================================
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
-
 USER_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1903143728"
 DATA_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
 DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1122298238"
 
+# List of diseases as per your Excel sheet
+DISEASE_LIST = ["MALARIA", "DENGUE", "CHIKUNGUNYA", "LEPTO", "GASTRO", "HEPATITIS", "H1N1", "Typhoid"]
+
 @st.cache_data(ttl=60)
-def fetch_smart_data(url, key_column):
+def fetch_user_data(url):
+    try:
+        df = pd.read_csv(url, dtype=str).fillna("")
+        df.columns = df.columns.str.strip()
+        return df
+    except Exception as e:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=60)
+def fetch_and_parse_disease_data(url):
+    """
+    Custom Parser with Year mapping to read horizontal years perfectly.
+    """
     try:
         df_raw = pd.read_csv(url, header=None, dtype=str).fillna("")
-        start_row = None
+        
+        disease_dataframes = {}
+        current_disease = None
+        start_idx = None
+
+        # Find where each disease block starts
         for i, row in df_raw.iterrows():
-            if key_column in [str(val).strip() for val in row.values]:
-                start_row = i
-                break
-        if start_row is not None:
-            df = df_raw.iloc[start_row:].copy()
-            df.columns = df.iloc[0].astype(str).str.strip()
-            df = df[1:].reset_index(drop=True)
+            row_values = [str(val).strip().upper() for val in row.values]
+            for disease in DISEASE_LIST:
+                if disease.upper() in row_values:
+                    if current_disease:
+                        disease_dataframes[current_disease] = {"start": start_idx, "end": i-1}
+                    current_disease = disease
+                    start_idx = i
+                    break
+                    
+        if current_disease:
+            disease_dataframes[current_disease] = {"start": start_idx, "end": len(df_raw)}
+
+        # Extract and format data for each disease
+        parsed_data = {}
+        for disease, indices in disease_dataframes.items():
+            df_slice = df_raw.iloc[indices["start"]:indices["end"]].copy()
             
-            # --- FIX FOR DUPLICATE & EMPTY COLUMNS ---
-            # 1. Remove empty column names
-            df = df.loc[:, df.columns != ""]
-            df = df.loc[:, df.columns.notna()]
-            # 2. Remove duplicate column names
-            df = df.loc[:, ~df.columns.duplicated()]
-            # -----------------------------------------
+            header_idx = None
+            for j, row in df_slice.iterrows():
+                if "Ward" in [str(val).strip() for val in row.values]:
+                    header_idx = j
+                    break
             
-            df = df.dropna(axis=1, how='all')
-            df = df.map(lambda x: str(x).strip() if x else "")
-            return df
-        return pd.DataFrame()
+            if header_idx is not None:
+                df_clean = df_raw.iloc[header_idx:].copy()
+                
+                # --- SMART YEAR MAPPING LOGIC ---
+                columns = df_raw.iloc[header_idx].astype(str).str.strip().tolist()
+                year_map = {0: "2026", 1: "2025", 2: "2024", 3: "2023", 4: "2022"}
+                unique_cols = []
+                seen = {}
+                
+                for c in columns:
+                    if not c:
+                        unique_cols.append("")
+                        continue
+                    
+                    count = seen.get(c, 0)
+                    seen[c] = count + 1
+                    
+                    # Keep core columns names simple for the first occurrence so we can filter easily
+                    if c.lower() in ["ward", "sr no.", "hp name"]:
+                        if count == 0:
+                            unique_cols.append(c) 
+                        else:
+                            unique_cols.append(f"{c} {year_map.get(count, '')}".strip())
+                    else:
+                        # Append the year to months and totals (e.g., Jan 2026, Total 2025)
+                        unique_cols.append(f"{c} {year_map.get(count, '')}".strip())
+                
+                df_clean.columns = unique_cols
+                df_clean = df_clean[1:].reset_index(drop=True)
+                
+                # Stop reading at the "Total" row using the first 3 columns
+                mask = df_clean.iloc[:, 0:3].apply(lambda x: x.astype(str).str.contains("Total", case=False, na=False)).any(axis=1)
+                total_idx = df_clean[mask].index.min()
+                if pd.notna(total_idx):
+                    df_clean = df_clean.iloc[:total_idx+1]
+                
+                # Remove empty columns that separated the years
+                df_clean = df_clean.loc[:, df_clean.columns != ""]
+                df_clean = df_clean.loc[:, df_clean.columns.notna()]
+                
+                parsed_data[disease] = df_clean
+                
+        return parsed_data
+
     except Exception as e:
         st.error(f"Data Fetching Error: {e}")
-        return pd.DataFrame()
+        return {}
 
 # =====================================================
 # 3. AUTHENTICATION LOGIC
@@ -83,9 +151,9 @@ if not st.session_state.auth["logged_in"]:
         
         if st.button("Sign In"):
             with st.spinner("Authenticating..."):
-                # Clear cache dynamically on login attempt to fetch fresh users
                 st.cache_data.clear() 
-                users_df = fetch_smart_data(USER_URL, "User ID")
+                users_df = fetch_user_data(USER_URL)
+                
                 if not users_df.empty and "User ID" in users_df.columns:
                     match = users_df[(users_df["User ID"] == u_id) & (users_df["Password"] == u_pw)]
                     if not match.empty:
@@ -103,10 +171,9 @@ if not st.session_state.auth["logged_in"]:
         st.markdown('</div>', unsafe_allow_html=True)
 
 # =====================================================
-# 5. DASHBOARD PAGE (WITH MULTI-TABS)
+# 5. DASHBOARD PAGE (WITH CUSTOM DISEASE TABS)
 # =====================================================
 else:
-    # Sidebar
     st.sidebar.title(f"👤 Welcome, {st.session_state.auth['id']}")
     st.sidebar.info(f"**Role:** {st.session_state.auth['role']}\n\n**Ward:** {st.session_state.auth['ward']}")
     
@@ -114,52 +181,29 @@ else:
         st.session_state.auth = {"logged_in": False, "id": "", "ward": "", "role": ""}
         st.rerun()
 
-    # Main Dashboard Header
     st.title(f"📊 {st.session_state.auth['ward']} Ward Dashboard")
     st.markdown("---")
     
-    with st.spinner("Fetching live data..."):
-        data_df = fetch_smart_data(DATA_URL, "Ward")
+    with st.spinner("Analyzing Complex Grid Data..."):
+        parsed_diseases = fetch_and_parse_disease_data(DATA_URL)
     
-    if not data_df.empty:
-        # Filter data based on Role
-        if st.session_state.auth["role"].lower() != "admin":
-            # Safety check if Ward column exists
-            if "Ward" in data_df.columns:
-                data_df = data_df[data_df["Ward"] == st.session_state.auth["ward"]]
-            else:
-                st.error("Error: 'Ward' column not found in the Data sheet.")
-
-        if not data_df.empty:
-            # Check for Disease column dynamically
-            disease_col = "Disease" if "Disease" in data_df.columns else ("Disease Name" if "Disease Name" in data_df.columns else None)
-            
-            if disease_col:
-                # Get unique diseases for dynamic tabs
-                unique_diseases = data_df[disease_col].unique().tolist()
-                # Remove empty disease names if any
-                unique_diseases = [d for d in unique_diseases if d.strip() != ""]
+    if parsed_diseases:
+        disease_names = list(parsed_diseases.keys())
+        tabs = st.tabs(disease_names)
+        
+        for i, disease in enumerate(disease_names):
+            with tabs[i]:
+                st.markdown(f"<h3 class='disease-header'>{disease} Report</h3>", unsafe_allow_html=True)
                 
-                if unique_diseases:
-                    # Create tabs dynamically
-                    tabs = st.tabs(unique_diseases)
-                    
-                    # Loop through tabs and display specific data
-                    for i, disease in enumerate(unique_diseases):
-                        with tabs[i]:
-                            st.subheader(f"{disease} Data Overview")
-                            disease_data = data_df[data_df[disease_col] == disease]
-                            
-                            # Display Dataframe
-                            st.dataframe(disease_data, use_container_width=True)
-                else:
-                    st.info("No valid diseases found to display tabs.")
-                    st.dataframe(data_df, use_container_width=True)
-            else:
-                # If no disease column found, just show the whole data for that ward
-                st.info("Displaying overall Ward data.")
-                st.dataframe(data_df, use_container_width=True)
-        else:
-            st.warning("No records found for your ward.")
+                df_disease = parsed_diseases[disease]
+                
+                # Filter by Ward if user is not Admin
+                if st.session_state.auth["role"].lower() != "admin":
+                    if "Ward" in df_disease.columns:
+                        # Display user's ward along with the Total row
+                        df_disease = df_disease[(df_disease["Ward"] == st.session_state.auth["ward"]) | (df_disease["Ward"].str.contains("Total", case=False, na=False))]
+                
+                st.dataframe(df_disease, use_container_width=True)
+                
     else:
-        st.error("Dashboard data could not be loaded. Please check the Google Sheet link.")
+        st.error("Could not parse the disease data from the Google Sheet. Please check the format.")
