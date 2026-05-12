@@ -4,7 +4,7 @@ import pandas as pd
 # =====================================================
 # 1. PAGE SETUP & STYLING
 # =====================================================
-st.set_page_config(page_title="Mumbai Health Dashboard", layout="wide") # Changed to 'wide' for better dashboard view
+st.set_page_config(page_title="Mumbai Health Dashboard", layout="wide")
 
 st.markdown("""
     <style>
@@ -24,10 +24,14 @@ st.markdown("""
 # 2. CONFIG & DATA LOADER
 # =====================================================
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
-USER_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
+
+# Updated USER_URL with the correct GID from your screenshot
+USER_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1903143728"
+
+# Check if this GID is correct for your 'Data' tab. If not, change it later.
 DATA_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1152016550"
 
-# TODO: Replace 'YOUR_HP_GID_HERE' with the actual gid of the 'data_hp' tab
+# Placeholder for 'data_hp' tab GID
 DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=YOUR_HP_GID_HERE"
 
 @st.cache_data(ttl=60)
@@ -117,7 +121,6 @@ else:
 
         if not data_df.empty:
             # Assuming there is a column named 'Disease' or 'Disease Name'
-            # Let's check common names or default to the first available column if missing
             disease_col = "Disease" if "Disease" in data_df.columns else "Disease Name"
             
             if disease_col in data_df.columns:
@@ -133,11 +136,8 @@ else:
                         st.subheader(f"{disease} Data Overview")
                         disease_data = data_df[data_df[disease_col] == disease]
                         
-                        # Display Dataframe for now
+                        # Display Dataframe
                         st.dataframe(disease_data, use_container_width=True)
-                        
-                        # Placeholders for future steps
-                        st.info("Graphs and Healthpost level data for this disease will be added here in the next step.")
             else:
                 st.warning(f"Could not find a column named '{disease_col}' for creating tabs.")
                 st.dataframe(data_df, use_container_width=True)
