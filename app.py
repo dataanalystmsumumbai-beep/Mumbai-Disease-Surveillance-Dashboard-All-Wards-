@@ -25,7 +25,6 @@ st.markdown("""
 # =====================================================
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
 
-# GIDs updated based on screenshots
 USER_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1903143728"
 DATA_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
 DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1122298238"
@@ -41,13 +40,23 @@ def fetch_smart_data(url, key_column):
                 break
         if start_row is not None:
             df = df_raw.iloc[start_row:].copy()
-            df.columns = df.iloc[0].str.strip()
+            df.columns = df.iloc[0].astype(str).str.strip()
             df = df[1:].reset_index(drop=True)
+            
+            # --- FIX FOR DUPLICATE & EMPTY COLUMNS ---
+            # 1. Remove empty column names
+            df = df.loc[:, df.columns != ""]
+            df = df.loc[:, df.columns.notna()]
+            # 2. Remove duplicate column names
+            df = df.loc[:, ~df.columns.duplicated()]
+            # -----------------------------------------
+            
             df = df.dropna(axis=1, how='all')
             df = df.map(lambda x: str(x).strip() if x else "")
             return df
         return pd.DataFrame()
     except Exception as e:
+        st.error(f"Data Fetching Error: {e}")
         return pd.DataFrame()
 
 # =====================================================
@@ -74,6 +83,8 @@ if not st.session_state.auth["logged_in"]:
         
         if st.button("Sign In"):
             with st.spinner("Authenticating..."):
+                # Clear cache dynamically on login attempt to fetch fresh users
+                st.cache_data.clear() 
                 users_df = fetch_smart_data(USER_URL, "User ID")
                 if not users_df.empty and "User ID" in users_df.columns:
                     match = users_df[(users_df["User ID"] == u_id) & (users_df["Password"] == u_pw)]
@@ -113,7 +124,11 @@ else:
     if not data_df.empty:
         # Filter data based on Role
         if st.session_state.auth["role"].lower() != "admin":
-            data_df = data_df[data_df["Ward"] == st.session_state.auth["ward"]]
+            # Safety check if Ward column exists
+            if "Ward" in data_df.columns:
+                data_df = data_df[data_df["Ward"] == st.session_state.auth["ward"]]
+            else:
+                st.error("Error: 'Ward' column not found in the Data sheet.")
 
         if not data_df.empty:
             # Check for Disease column dynamically
@@ -122,18 +137,24 @@ else:
             if disease_col:
                 # Get unique diseases for dynamic tabs
                 unique_diseases = data_df[disease_col].unique().tolist()
+                # Remove empty disease names if any
+                unique_diseases = [d for d in unique_diseases if d.strip() != ""]
                 
-                # Create tabs dynamically
-                tabs = st.tabs(unique_diseases)
-                
-                # Loop through tabs and display specific data
-                for i, disease in enumerate(unique_diseases):
-                    with tabs[i]:
-                        st.subheader(f"{disease} Data Overview")
-                        disease_data = data_df[data_df[disease_col] == disease]
-                        
-                        # Display Dataframe
-                        st.dataframe(disease_data, use_container_width=True)
+                if unique_diseases:
+                    # Create tabs dynamically
+                    tabs = st.tabs(unique_diseases)
+                    
+                    # Loop through tabs and display specific data
+                    for i, disease in enumerate(unique_diseases):
+                        with tabs[i]:
+                            st.subheader(f"{disease} Data Overview")
+                            disease_data = data_df[data_df[disease_col] == disease]
+                            
+                            # Display Dataframe
+                            st.dataframe(disease_data, use_container_width=True)
+                else:
+                    st.info("No valid diseases found to display tabs.")
+                    st.dataframe(data_df, use_container_width=True)
             else:
                 # If no disease column found, just show the whole data for that ward
                 st.info("Displaying overall Ward data.")
