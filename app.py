@@ -2,53 +2,47 @@ import streamlit as st
 import pandas as pd
 
 # Page setup
-st.set_page_config(page_title="Mumbai Disease Dashboard", layout="wide")
+st.set_page_config(page_title="Disease Surveillance Dashboard", layout="wide")
 
-# Google Sheet Configuration
+# Google Sheet Details
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
-
-# CSV Links with GIDs
 USER_DB_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
 DATA_MAIN_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1152016550"
-DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1496660724"
-DATA_BACKEND_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1815143324"
 
-def load_google_sheet(url, key_column):
+def load_dynamic_sheet(url, keyword):
     """
-    Cleans Google Sheet data by skipping empty leading rows and columns.
-    Searches for the row containing 'key_column' and sets it as header.
+    Ha function sheet madhye 'User ID' kiva 'Ward' kuthe aahe te shodhto 
+    ani tyachya bajucha purna data table load karto.
     """
     try:
-        # Load raw data without headers to find the actual table
+        # Purna sheet string mhanun read kara
         df_raw = pd.read_csv(url, header=None, dtype=str)
         
-        # 1. Find the row index where our 'key_column' exists
+        # 1. Header row shodha (jithe 'User ID' kiva 'Ward' lihila aahe)
         header_row_idx = None
         for i, row in df_raw.iterrows():
-            if row.astype(str).str.contains(key_column, case=False, na=False).any():
+            if row.astype(str).str.contains(keyword, case=False, na=False).any():
                 header_row_idx = i
                 break
         
         if header_row_idx is not None:
-            # 2. Slice dataframe from that row
+            # 2. Table slice kara
             df = df_raw.iloc[header_row_idx:].copy()
             
-            # 3. Set the first row of this slice as column names
+            # 3. Headers set kara ani rikame columns (A, B, C) kadhun taka
             df.columns = df.iloc[0].str.strip()
             df = df[1:].reset_index(drop=True)
             
-            # 4. Remove empty columns (caused by empty A, B, C columns in sheet)
+            # 4. Fakt te columns ghya jyana nav aahe (Unnamed kadhun taka)
             df = df.loc[:, df.columns.notna()]
             df = df.loc[:, ~df.columns.str.contains('^Unnamed|^nan', case=False)]
             
-            # 5. Final cleanup: drop empty rows
+            # 5. Row cleanup
             df = df.dropna(how='all')
             return df
-        else:
-            return pd.DataFrame()
-            
+        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Sheet Loading Error: {e}")
+        st.error(f"Error: {e}")
         return pd.DataFrame()
 
 # Session State
@@ -57,21 +51,20 @@ if 'logged_in' not in st.session_state:
     st.session_state['user_role'] = None
     st.session_state['user_ward'] = None
 
-# --- LOGIN ---
+# --- LOGIN SCREEN ---
 if not st.session_state['logged_in']:
-    st.title("🔐 Surveillance System Login")
+    st.title("🔐 Mumbai Health Login")
     
-    with st.form("login_box"):
+    with st.form("login"):
         u_id = st.text_input("User ID")
         u_pw = st.text_input("Password", type="password")
-        login_btn = st.form_submit_button("Sign In")
+        btn = st.form_submit_button("Sign In")
         
-        if login_btn:
-            # Look for 'User ID' keyword to find header row
-            users_df = load_google_sheet(USER_DB_URL, "User ID")
+        if btn:
+            users_df = load_dynamic_sheet(USER_DB_URL, "User ID")
             
             if not users_df.empty:
-                # Basic credential check
+                # Column check
                 if 'User ID' in users_df.columns and 'Password' in users_df.columns:
                     match = users_df[(users_df['User ID'] == u_id) & (users_df['Password'] == str(u_pw))]
                     
@@ -81,31 +74,34 @@ if not st.session_state['logged_in']:
                         st.session_state['user_ward'] = match.iloc[0]['Ward']
                         st.rerun()
                     else:
-                        st.error("Invalid credentials.")
+                        st.error("Ghalat User ID kiva Password!")
                 else:
-                    st.error(f"Structure Error: Found columns {list(users_df.columns)}")
+                    st.warning(f"Columns found: {list(users_df.columns)}")
+                    st.error("Sheet madhye 'User ID' navacha column sapadla nahi.")
             else:
-                st.error("Could not fetch User Database. Check Sheet Sharing.")
+                st.error("Database load hou shakla nahi. Sheet sharing check kar.")
 
-# --- DASHBOARD ---
+# --- DASHBOARD SCREEN ---
 else:
     role = st.session_state['user_role']
     ward = st.session_state['user_ward']
     
-    st.sidebar.success(f"Login: {st.session_state['user_role']}")
+    st.sidebar.success(f"Login Success: {role}")
     if st.sidebar.button("Logout"):
         st.session_state['logged_in'] = False
         st.rerun()
 
-    # ADMIN
-    if role == "Admin":
-        st.title("🏆 Master Dashboard")
-        main_df = load_google_sheet(DATA_MAIN_URL, "Ward")
-        st.dataframe(main_df, use_container_width=True)
-        
-    # USER
-    else:
-        st.title(f"📍 Ward Status: {ward}")
-        main_df = load_google_sheet(DATA_MAIN_URL, "Ward")
-        if not main_df.empty and 'Ward' in main_df.columns:
-            st.dataframe(main_df[main_df['Ward'] == ward], use_container_width=True)
+    st.title(f"📊 Dashboard - {ward} Ward")
+    
+    # Dashboard cha data load kara
+    main_df = load_dynamic_sheet(DATA_MAIN_URL, "Ward")
+    
+    if not main_df.empty:
+        # Admin sathi sagle wards, User sathi fakt tyancha ward
+        if role != "Admin":
+            display_df = main_df[main_df['Ward'] == ward]
+        else:
+            display_df = main_df
+            
+        st.subheader(f"Disease Data for {ward}")
+        st.dataframe(display_df, use_container_width=True)
