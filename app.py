@@ -1,48 +1,48 @@
 import streamlit as st
 import pandas as pd
 
-# Page setup
+# Page Configuration
 st.set_page_config(page_title="Public Health Dashboard", layout="wide")
 
-# 1. YOUR GOOGLE SHEET ID
+# Google Sheet Configuration
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
 
-# 2. TAB GIDs (Make sure these match your sheet)
-# Click on each tab in Google Sheets and check the 'gid' in the URL
-USER_GID = "79694728"
-DATA_GID = "1152016550"
+# CSV Export Links (Ensure GIDs match your sheet tabs)
+USER_DB_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
+DATA_MAIN_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1152016550"
+DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1496660724"
+DATA_BACKEND_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1815143324"
 
-# Constructing URLs
-USER_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={USER_GID}"
-DATA_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={DATA_GID}"
-
-def load_data_robust(url):
+def load_sheet_data(url):
+    """
+    Downloads the Google Sheet as CSV and automatically finds the 
+    row containing headers like 'User ID' or 'Ward'.
+    """
     try:
-        # We read everything as strings to avoid format errors
-        df = pd.read_csv(url, header=None, dtype=str)
+        # Load raw data with no headers to find the actual header row
+        df_raw = pd.read_csv(url, header=None, dtype=str)
         
-        # Find row containing headers
+        # Search for a row that contains our key columns
         header_row_idx = None
-        for i, row in df.iterrows():
-            if row.astype(str).str.contains('User ID|Ward|Password', case=False).any():
+        for i, row in df_raw.iterrows():
+            row_str = row.astype(str).str.lower()
+            if any(key in row_str.values for key in ['user id', 'ward', 'hp name', 'disease']):
                 header_row_idx = i
                 break
         
         if header_row_idx is not None:
-            new_header = df.iloc[header_row_idx].str.strip()
-            df = df.iloc[header_row_idx+1:].copy()
-            df.columns = new_header
-            # Drop empty columns and rows
+            # Set the found row as header and clean the dataframe
+            df = df_raw.iloc[header_row_idx:].copy()
+            df.columns = df.iloc[0].str.strip()
+            df = df[1:].reset_index(drop=True)
+            
+            # Remove entirely empty rows and columns (common in Google Sheets)
             df = df.dropna(axis=1, how='all').dropna(axis=0, how='all')
-            # Reset index
-            df = df.reset_index(drop=True)
             return df
         else:
-            st.error("Header not found in the sheet.")
             return pd.DataFrame()
     except Exception as e:
-        st.error(f"Access Error: {e}")
-        st.info("Check: Is the sheet shared as 'Anyone with the link can view'?")
+        st.error(f"Connection Error: {e}")
         return pd.DataFrame()
 
 # Initialize Session State
@@ -51,49 +51,72 @@ if 'logged_in' not in st.session_state:
     st.session_state['user_role'] = None
     st.session_state['user_ward'] = None
 
-# --- LOGIN SCREEN ---
+# --- LOGIN PAGE ---
 if not st.session_state['logged_in']:
     st.title("🔐 Mumbai Disease Surveillance Login")
     
-    with st.form("login_box"):
-        uid = st.text_input("User ID")
-        pwd = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Sign In")
-        
-        if submit:
-            users_df = load_robust_data(USER_URL)
+    with st.form("login_form"):
+        input_user = st.text_input("User ID")
+        input_pass = st.text_input("Password", type="password")
+        login_btn = st.form_submit_button("Sign In")
+
+        if login_btn:
+            users_df = load_sheet_data(USER_DB_URL)
             
             if not users_df.empty:
-                # Clean column names for matching
-                users_df.columns = [str(c).strip() for c in users_df.columns]
-                
-                # Check for correct column names
-                target_id_col = 'User ID'
-                target_pw_col = 'Password'
-                
-                if target_id_col in users_df.columns and target_pw_col in users_df.columns:
-                    # Validate
-                    match = users_df[(users_df[target_id_col] == uid) & (users_df[target_pw_col] == str(pwd))]
+                # Basic column name check
+                if 'User ID' in users_df.columns and 'Password' in users_df.columns:
+                    # Match credentials
+                    match = users_df[(users_df['User ID'] == input_user) & (users_df['Password'] == str(input_pass))]
                     
                     if not match.empty:
                         st.session_state['logged_in'] = True
-                        st.session_state['user_role'] = match['Role'].values[0] if 'Role' in match.columns else "User"
-                        st.session_state['user_ward'] = match['Ward'].values[0] if 'Ward' in match.columns else "All"
+                        st.session_state['user_role'] = match['Role'].values[0]
+                        st.session_state['user_ward'] = match['Ward'].values[0]
                         st.rerun()
                     else:
-                        st.error("Invalid credentials.")
+                        st.error("Invalid User ID or Password")
                 else:
-                    st.warning(f"Columns found: {list(users_df.columns)}")
-                    st.error("Sheet structure mismatch. 'User ID' or 'Password' not found.")
+                    st.warning(f"Columns detected: {list(users_df.columns)}")
+                    st.error("Header Error: 'User ID' column not detected in the sheet.")
             else:
-                st.error("Could not load User Database. Check permissions.")
+                st.error("Access Error: Could not fetch data. Check Google Sheet 'Share' settings.")
 
-# --- DASHBOARD SCREEN ---
+# --- DASHBOARD PAGE ---
 else:
-    st.sidebar.success(f"Welcome {st.session_state['user_role']}")
+    role = st.session_state['user_role']
+    ward = st.session_state['user_ward']
+
+    st.sidebar.title("App Navigation")
+    st.sidebar.success(f"Logged in as: {role}")
     if st.sidebar.button("Logout"):
         st.session_state['logged_in'] = False
         st.rerun()
-    
-    st.title(f"Dashboard - {st.session_state['user_ward']}")
-    # Add your data display logic here...
+
+    # ADMIN VIEW
+    if role == "Admin":
+        st.title("🏆 Master Dashboard (All Wards)")
+        
+        st.subheader("Disease Comparison")
+        backend_df = load_sheet_data(DATA_BACKEND_URL)
+        st.dataframe(backend_df, use_container_width=True)
+
+        st.subheader("Global Ward Statistics")
+        main_df = load_sheet_data(DATA_MAIN_URL)
+        if not main_df.empty and 'Ward' in main_df.columns:
+            selected_ward = st.selectbox("Select Ward", main_df['Ward'].unique())
+            st.dataframe(main_df[main_df['Ward'] == selected_ward], use_container_width=True)
+
+    # USER VIEW
+    else:
+        st.title(f"📍 Ward Report: {ward}")
+        
+        main_df = load_sheet_data(DATA_MAIN_URL)
+        if not main_df.empty and 'Ward' in main_df.columns:
+            st.subheader(f"Data for Ward {ward}")
+            st.dataframe(main_df[main_df['Ward'] == ward], use_container_width=True)
+
+        st.subheader("Health Post Details")
+        hp_df = load_sheet_data(DATA_HP_URL)
+        if not hp_df.empty and 'Ward' in hp_df.columns:
+            st.dataframe(hp_df[hp_df['Ward'] == ward], use_container_width=True)
