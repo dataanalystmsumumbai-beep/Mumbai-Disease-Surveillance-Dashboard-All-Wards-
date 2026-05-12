@@ -14,175 +14,153 @@ st.markdown("""
         width: 100%; border-radius: 5px; height: 3em;
         background-color: #007bff; color: white; font-weight: bold;
     }
-    .login-card {
-        padding: 30px; border-radius: 15px; background-color: white;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1); text-align: center;
+    .filter-container {
+        padding: 20px; border-radius: 10px; background-color: #ffffff;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05); margin-bottom: 20px;
     }
-    .disease-header { color: #d9534f; border-bottom: 2px solid #d9534f; padding-bottom: 5px; margin-top: 20px; }
-    .summary-header { color: #28a745; border-bottom: 2px solid #28a745; padding-bottom: 5px; margin-top: 30px; }
+    .disease-header { color: #d9534f; font-weight: bold; border-bottom: 2px solid #d9534f; }
     </style>
     """, unsafe_allow_html=True)
 
 # =====================================================
-# 2. CONFIG & DATA LOADER
+# 2. CONFIG & LIVE DATA CONNECTORS
 # =====================================================
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
 USER_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1903143728"
 DATA_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
 DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1122298238"
 
-DISEASE_LIST = ["MALARIA", "DENGUE", "CHIKUNGUNYA", "LEPTO", "GASTRO", "HEPATITIS", "H1N1", "Typhoid"]
-MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+DISEASES = ["MALARIA", "DENGUE", "CHIKUNGUNYA", "LEPTO", "GASTRO", "HEPATITIS", "H1N1", "TYPHOID"]
+YEARS = ["2026", "2025", "2024", "2023"]
 
+# =====================================================
+# 3. CORE LOGIC: GRID DATA PARSER
+# =====================================================
 @st.cache_data(ttl=60)
-def fetch_user_data(url):
+def fetch_raw_csv(url):
     try:
-        df = pd.read_csv(url, dtype=str).fillna("")
-        df.columns = df.columns.str.strip()
-        return df
+        return pd.read_csv(url, header=None, dtype=str).fillna("")
     except:
         return pd.DataFrame()
 
-@st.cache_data(ttl=60)
-def fetch_and_parse_disease_data(url):
-    try:
-        df_raw = pd.read_csv(url, header=None, dtype=str).fillna("")
-        disease_dataframes = {}
-        current_disease = None
-        start_idx = None
+def get_disease_block(df_raw, disease_name, selected_year):
+    """
+    Finds the specific disease block and matches the correct year columns.
+    """
+    # 1. Find the row index where disease name is mentioned
+    disease_row = None
+    for idx, row in df_raw.iterrows():
+        if disease_name.upper() in [str(v).strip().upper() for v in row.values]:
+            disease_row = idx
+            break
+    
+    if disease_row is None: return pd.DataFrame()
 
-        for i, row in df_raw.iterrows():
-            row_values = [str(val).strip().upper() for val in row.values]
-            for disease in DISEASE_LIST:
-                if disease.upper() in row_values:
-                    if current_disease:
-                        disease_dataframes[current_disease] = {"start": start_idx, "end": i-1}
-                    current_disease = disease
-                    start_idx = i
-                    break
-        if current_disease:
-            disease_dataframes[current_disease] = {"start": start_idx, "end": len(df_raw)}
-
-        parsed_data = {}
-        for disease, indices in disease_dataframes.items():
-            df_slice = df_raw.iloc[indices["start"]:indices["end"]].copy()
-            header_idx = None
-            for j, row in df_slice.iterrows():
-                row_vals = [str(val).strip() for val in row.values]
-                if "Ward" in row_vals or "HP Name" in row_vals:
-                    header_idx = j
-                    break
+    # 2. Find the 'Ward' header row under that disease
+    header_row_idx = None
+    for idx in range(disease_row, disease_row + 10): # Look 10 rows down
+        if "Ward" in [str(v).strip() for v in df_raw.iloc[idx].values]:
+            header_row_idx = idx
+            break
             
-            if header_idx is not None:
-                df_clean = df_raw.iloc[header_idx:].copy()
-                columns = df_raw.iloc[header_idx].astype(str).str.strip().tolist()
-                year_map = {0: "2026", 1: "2023", 2: "2024", 3: "2025", 4: "2022"} 
-                
-                unique_cols = []
-                seen = {}
-                for c in columns:
-                    if not c:
-                        unique_cols.append("")
-                        continue
-                    count = seen.get(c, 0)
-                    seen[c] = count + 1
-                    if c.lower() in ["ward", "sr no.", "hp name"]:
-                        unique_cols.append(c if count == 0 else f"{c}_{count}")
-                    else:
-                        unique_cols.append(f"{c} {year_map.get(count, '')}".strip())
-                
-                df_clean.columns = unique_cols
-                df_clean = df_clean[1:].reset_index(drop=True)
-                mask = df_clean.iloc[:, 0:4].apply(lambda x: x.astype(str).str.contains("Grand Total", case=False, na=False)).any(axis=1)
-                total_idx = df_clean[mask].index.min()
-                if pd.notna(total_idx):
-                    df_clean = df_clean.iloc[:total_idx+1]
-                
-                df_clean = df_clean.loc[:, df_clean.columns != ""]
-                parsed_data[disease] = df_clean
-        return parsed_data
-    except:
-        return {}
+    if header_row_idx is None: return pd.DataFrame()
+
+    # 3. Process the table
+    df_block = df_raw.iloc[header_row_idx:].copy()
+    
+    # Identify Year Blocks (Since years are side-by-side)
+    # 2026: Col A-M, 2025: Col Q-AD, etc. (Mapping manually based on your Sheet structure)
+    year_col_ranges = {
+        "2026": (0, 14),   # Approx columns based on your screenshot
+        "2025": (16, 30),
+        "2024": (31, 45),
+        "2023": (46, 60)
+    }
+    
+    start_col, end_col = year_col_ranges.get(selected_year, (0, 14))
+    
+    # Extract only the selected year columns + Ward/HP Name info
+    # We keep Ward (Col 1), HP Name (Col 2/3) depending on the sheet
+    info_cols = [0, 1, 2] # Ward, HP Name columns
+    data_cols = list(range(start_col, end_col))
+    
+    final_cols = list(dict.fromkeys(info_cols + data_cols)) # Unique combined list
+    df_final = df_block.iloc[:, final_cols].copy()
+    
+    # Set headers
+    df_final.columns = df_final.iloc[0].str.strip()
+    df_final = df_final[1:].reset_index(drop=True)
+    
+    # Clean up empty rows/totals
+    df_final = df_final[df_final.iloc[:, 0] != ""]
+    return df_final
 
 # =====================================================
-# 3. AUTHENTICATION
+# 4. AUTHENTICATION
 # =====================================================
 if "auth" not in st.session_state:
-    st.session_state.auth = {"logged_in": False, "id": "", "ward": "", "role": ""}
+    st.session_state.auth = {"logged_in": False, "ward": "", "role": ""}
 
 if not st.session_state.auth["logged_in"]:
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 1.5, 1])
-    with col2:
-        st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.image("https://img.icons8.com/fluency/96/hospital.png", width=80)
-        st.title("Mumbai Health Portal")
-        u_id = st.text_input("User ID")
-        u_pw = st.text_input("Password", type="password")
-        if st.button("Sign In"):
-            st.cache_data.clear()
-            users_df = fetch_user_data(USER_URL)
-            if not users_df.empty:
-                match = users_df[(users_df["User ID"] == u_id) & (users_df["Password"] == u_pw)]
-                if not match.empty:
-                    st.session_state.auth = {"logged_in": True, "id": match.iloc[0]["User ID"], "ward": match.iloc[0]["Ward"], "role": match.iloc[0]["Role"]}
-                    st.rerun()
-                else:
-                    st.error("Invalid credentials.")
-        st.markdown('</div>', unsafe_allow_html=True)
+    # Login Logic (simplified for testing)
+    st.title("🏥 Mumbai Health Portal")
+    u_id = st.text_input("User ID")
+    u_pw = st.text_input("Password", type="password")
+    if st.button("Login"):
+        users_df = fetch_raw_csv(USER_URL)
+        # Check against User ID sheet (assuming Row 1 is header)
+        if not users_df.empty:
+            users_df.columns = users_df.iloc[0]
+            users_df = users_df[1:]
+            match = users_df[(users_df["User ID"] == u_id) & (users_df["Password"] == u_pw)]
+            if not match.empty:
+                st.session_state.auth = {"logged_in": True, "ward": match.iloc[0]["Ward"], "role": match.iloc[0]["Role"]}
+                st.rerun()
+            else: st.error("Invalid credentials")
 
 # =====================================================
-# 4. DASHBOARD
+# 5. DASHBOARD MAIN
 # =====================================================
 else:
-    st.sidebar.title(f"👤 {st.session_state.auth['id']}")
-    st.sidebar.info(f"Ward: {st.session_state.auth['ward']}")
-    
-    # Global Month Filter
-    selected_month = st.sidebar.selectbox("Select Month for Summary", MONTHS)
+    # Sidebar Filters
+    st.sidebar.title(f"👤 Ward: {st.session_state.auth['ward']}")
+    sel_disease = st.sidebar.selectbox("Select Disease", DISEASES)
+    sel_year = st.sidebar.selectbox("Select Year", YEARS)
     
     if st.sidebar.button("Logout"):
-        st.session_state.auth = {"logged_in": False, "id": "", "ward": "", "role": ""}
+        st.session_state.auth = {"logged_in": False}
         st.rerun()
 
-    st.title(f"📊 {st.session_state.auth['ward']} Dashboard")
-    
-    with st.spinner("Fetching data..."):
-        parsed_ward = fetch_and_parse_disease_data(DATA_URL)
-        parsed_hp = fetch_and_parse_disease_data(DATA_HP_URL)
-    
-    if parsed_ward:
-        tabs = st.tabs(list(parsed_ward.keys()))
-        for i, disease in enumerate(parsed_ward.keys()):
-            with tabs[i]:
-                # Section 1: Ward Level Table
-                st.markdown(f"<h3 class='disease-header'>{disease} - Ward Wise Report</h3>", unsafe_allow_html=True)
-                df_w = parsed_ward[disease]
-                if st.session_state.auth["role"].lower() != "admin":
-                    df_w = df_w[(df_w["Ward"] == st.session_state.auth["ward"]) | (df_w["Ward"].str.contains("Total", case=False, na=False))]
-                st.dataframe(df_w, use_container_width=True)
+    st.markdown(f"<h2 class='disease-header'>{sel_disease} Report - {sel_year}</h2>", unsafe_allow_html=True)
 
-                # Section 2: Health Post Level Dynamic Summary
-                st.markdown(f"<h3 class='summary-header'>{disease} - Health Post Summary ({selected_month})</h3>", unsafe_allow_html=True)
-                if disease in parsed_hp:
-                    df_h = parsed_hp[disease]
-                    # Filter by Ward
-                    if st.session_state.auth["role"].lower() != "admin":
-                        df_h = df_h[df_h["Ward"] == st.session_state.auth["ward"]]
-                    
-                    if not df_h.empty:
-                        # Identify columns for the selected month across years
-                        # Mapping: We need columns like "Jan 2023", "Jan 2024", etc.
-                        cols_to_show = ["HP Name"]
-                        target_years = ["2023", "2024", "2025", "2026"]
-                        for yr in target_years:
-                            col_name = f"{selected_month} {yr}"
-                            if col_name in df_h.columns:
-                                cols_to_show.append(col_name)
-                        
-                        summary_df = df_h[cols_to_show].reset_index(drop=True)
-                        st.dataframe(summary_df, use_container_width=True)
-                    else:
-                        st.warning(f"No Health Post data found for {st.session_state.auth['ward']}.")
-                else:
-                    st.info(f"Detailed HP data for {disease} is not available.")
+    # Fetch Data
+    raw_hp_data = fetch_raw_csv(DATA_HP_URL)
+    
+    if not raw_hp_data.empty:
+        # Get processed block
+        df_display = get_disease_block(raw_hp_data, sel_disease, sel_year)
+        
+        if not df_display.empty:
+            # Filter by User's Ward
+            if st.session_state.auth["role"].lower() != "admin":
+                # Ensure we find the Ward column correctly
+                ward_col = "Ward" if "Ward" in df_display.columns else df_display.columns[1]
+                df_display = df_display[df_display[ward_col] == st.session_state.auth["ward"]]
+            
+            # HP Selector
+            all_hps = ["All Health Posts"] + df_display["HP Name"].unique().tolist()
+            sel_hp = st.selectbox("Filter by Health Post", all_hps)
+            
+            if sel_hp != "All Health Posts":
+                df_display = df_display[df_display["HP Name"] == sel_hp]
+            
+            # Final Output
+            st.write(f"### Records for {st.session_state.auth['ward']} Ward")
+            st.dataframe(df_display, use_container_width=True)
+            
+            # Simple Summary Metric
+            if "Total" in df_display.columns:
+                total_cases = pd.to_numeric(df_display["Total"], errors='coerce').sum()
+                st.metric(label=f"Total {sel_disease} Cases", value=int(total_cases))
+        else:
+            st.warning("No data found for the selected criteria.")
