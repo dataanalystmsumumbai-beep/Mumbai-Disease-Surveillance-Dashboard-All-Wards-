@@ -4,127 +4,138 @@ import pandas as pd
 # Page setup
 st.set_page_config(page_title="Disease Surveillance Dashboard", layout="wide")
 
-# Google Sheet Details
+# Google Sheet Configuration
 SHEET_ID = "1NkDvWNpZCqeGIQmGCm3VPHvYV9fUzsn1Ln5sbS3l4Qk"
 
-# Specific URLs for each tab using GID
+# CSV Export Links
 USER_DB_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=79694728"
 DATA_MAIN_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1152016550"
 DATA_HP_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1496660724"
 DATA_BACKEND_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=1815143324"
 
-def load_robust_data(url):
+def get_cleaned_df(url, keyword):
     """
-    This function reads the CSV and automatically finds the header row 
-    to avoid 'KeyError' caused by empty rows/columns in Google Sheets.
+    Downloads CSV and finds the header row automatically by searching for a keyword.
+    Removes empty leading/trailing rows and columns.
     """
     try:
-        # Load raw data without headers first
         df_raw = pd.read_csv(url, header=None)
         
-        # Find the index of the row that contains 'User ID' or 'Ward'
-        header_index = 0
+        # 1. Find the row index that contains our keyword (e.g., 'User ID' or 'Ward')
+        header_row_idx = None
         for i, row in df_raw.iterrows():
-            if row.astype(str).str.contains('User ID|Ward|Disease', case=False, na=False).any():
-                header_index = i
+            if row.astype(str).str.contains(keyword, case=False, na=False).any():
+                header_row_idx = i
                 break
         
-        # Re-load or set the found row as header
-        df = df_raw.iloc[header_index:].copy()
+        if header_row_idx is None:
+            return pd.DataFrame()
+
+        # 2. Set that row as the header
+        df = df_raw.iloc[header_row_idx:].copy()
         df.columns = df.iloc[0]
         df = df[1:].reset_index(drop=True)
-        
-        # Remove completely empty columns and rows
-        df = df.dropna(axis=1, how='all').dropna(axis=0, how='all')
-        
-        # Clean column names (strip spaces and handle NaN headers)
+
+        # 3. Clean column names (strip spaces, handle NaNs)
         df.columns = [str(c).strip() if pd.notna(c) else f"Unnamed_{i}" for i, c in enumerate(df.columns)]
+        
+        # 4. Remove empty columns/rows
+        df = df.loc[:, ~df.columns.str.contains('Unnamed')]
+        df = df.dropna(how='all').reset_index(drop=True)
         
         return df
     except Exception as e:
-        st.error(f"Error loading data: {e}")
+        st.error(f"Error reading data: {e}")
         return pd.DataFrame()
 
-# Initialize session state for login
+def find_column(df, target_name):
+    """Finds a column name that contains the target string, ignoring case."""
+    for col in df.columns:
+        if target_name.lower() in col.lower():
+            return col
+    return None
+
+# Session State Initialization
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
     st.session_state['user_role'] = None
     st.session_state['user_ward'] = None
 
-# --- LOGIN SCREEN ---
+# --- LOGIN ---
 if not st.session_state['logged_in']:
-    st.title("🔐 Login - Disease Surveillance Dashboard")
+    st.title("🔐 Mumbai Disease Surveillance Login")
     
     with st.form("login_form"):
-        uid = st.text_input("User ID")
-        pwd = st.text_input("Password", type="password")
-        login_btn = st.form_submit_button("Sign In")
-        
-        if login_btn:
-            users_df = load_robust_data(USER_DB_URL)
+        uid_input = st.text_input("Enter User ID")
+        pwd_input = st.text_input("Enter Password", type="password")
+        login_submit = st.form_submit_button("Login")
+
+        if login_submit:
+            # We look for 'User ID' keyword to find the header row
+            users_df = get_cleaned_df(USER_DB_URL, "User ID")
             
             if not users_df.empty:
-                # Ensure 'User ID' column exists before filtering
-                if 'User ID' in users_df.columns and 'Password' in users_df.columns:
-                    # Match credentials
-                    match = users_df[(users_df['User ID'] == uid) & (users_df['Password'] == str(pwd))]
+                # Find the actual column names in the sheet
+                id_col = find_column(users_df, "User ID")
+                pw_col = find_column(users_df, "Password")
+                role_col = find_column(users_df, "Role")
+                ward_col = find_column(users_df, "Ward")
+
+                if id_col and pw_col:
+                    # Validate login
+                    user_match = users_df[(users_df[id_col].astype(str) == str(uid_input)) & 
+                                          (users_df[pw_col].astype(str) == str(pwd_input))]
                     
-                    if not match.empty:
+                    if not user_match.empty:
                         st.session_state['logged_in'] = True
-                        st.session_state['user_role'] = match['Role'].values[0]
-                        st.session_state['user_ward'] = match['Ward'].values[0]
+                        st.session_state['user_role'] = user_match[role_col].values[0] if role_col else "User"
+                        st.session_state['user_ward'] = user_match[ward_col].values[0] if ward_col else "Unknown"
                         st.rerun()
                     else:
-                        st.error("Invalid User ID or Password")
+                        st.error("Invalid Username or Password")
                 else:
-                    st.error("Login structure error. Please check 'User ID' sheet headers.")
+                    st.error("Sheet Structure Error: Could not find 'User ID' or 'Password' columns.")
             else:
-                st.error("Could not connect to User Database.")
+                st.error("Could not load User Database. Please check your Google Sheet sharing settings.")
 
-# --- DASHBOARD SCREEN (After Login) ---
+# --- DASHBOARD ---
 else:
     role = st.session_state['user_role']
     ward = st.session_state['user_ward']
-    
-    st.sidebar.success(f"Login Successful!")
-    st.sidebar.markdown(f"**Role:** {role}")
-    st.sidebar.markdown(f"**Assigned Ward:** {ward}")
-    
+
+    st.sidebar.success(f"Login Success: {role}")
     if st.sidebar.button("Logout"):
         st.session_state['logged_in'] = False
         st.rerun()
 
-    # --- ADMIN (MASTER) VIEW ---
     if role == "Admin":
-        st.title("🏆 Master Dashboard - All Wards")
+        st.title("🏆 Master Surveillance Dashboard")
         
-        # Tab 1: Disease Trends from Backend
-        st.subheader("Comparative Analysis (Jan-May)")
-        backend_df = load_robust_data(DATA_BACKEND_URL)
+        st.subheader("Disease Trends (PPT Backend)")
+        backend_df = get_cleaned_df(DATA_BACKEND_URL, "Disease")
         st.dataframe(backend_df, use_container_width=True)
-        
-        # Tab 2: Full Data with Filtering
-        st.subheader("Global Data Filter")
-        main_df = load_robust_data(DATA_MAIN_URL)
-        if 'Ward' in main_df.columns:
-            ward_list = main_df['Ward'].unique().tolist()
-            selected_ward = st.selectbox("Select Ward to Inspect", ward_list)
-            st.write(main_df[main_df['Ward'] == selected_ward])
 
-    # --- USER (WARD) VIEW ---
+        st.subheader("Global Ward Data")
+        main_df = get_cleaned_df(DATA_MAIN_URL, "Ward")
+        if not main_df.empty:
+            ward_col = find_column(main_df, "Ward")
+            if ward_col:
+                selected_ward = st.selectbox("Filter by Ward", main_df[ward_col].unique())
+                st.dataframe(main_df[main_df[ward_col] == selected_ward])
+
     else:
-        st.title(f"📍 Surveillance Report - Ward {ward}")
+        st.title(f"📍 Ward Report: {ward}")
         
-        # Load main data and filter
-        main_df = load_robust_data(DATA_MAIN_URL)
-        if 'Ward' in main_df.columns:
-            ward_data = main_df[main_df['Ward'] == ward]
-            st.subheader(f"Disease Status in Ward {ward}")
+        main_df = get_cleaned_df(DATA_MAIN_URL, "Ward")
+        ward_col = find_column(main_df, "Ward")
+        if not main_df.empty and ward_col:
+            ward_data = main_df[main_df[ward_col] == ward]
+            st.subheader(f"Current Statistics for Ward {ward}")
             st.dataframe(ward_data, use_container_width=True)
-        
-        # Load Health Post Data
-        hp_df = load_robust_data(DATA_HP_URL)
-        if 'Ward' in hp_df.columns:
-            hp_ward_data = hp_df[hp_df['Ward'] == ward]
-            st.subheader(f"Health Post Wise Details ({ward})")
+
+        hp_df = get_cleaned_df(DATA_HP_URL, "HP Name")
+        hp_ward_col = find_column(hp_df, "Ward")
+        if not hp_df.empty and hp_ward_col:
+            hp_ward_data = hp_df[hp_df[hp_ward_col] == ward]
+            st.subheader(f"Health Post Details - {ward}")
             st.dataframe(hp_ward_data, use_container_width=True)
